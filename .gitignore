@@ -1,0 +1,8 @@
+data/xei_export
+output/
+__pycache__/
+*.pyc
+*.ipynb
+.venv/
+.DS_Store
+.ipynb_checkpoints/
