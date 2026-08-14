@@ -10,32 +10,8 @@ import struct
 import os
 import numpy as np
 import tifffile
-import matplotlib
 import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
-
-matplotlib.rcParams['font.family'] = 'Malgun Gothic'
-matplotlib.rcParams['axes.unicode_minus'] = False
-
-
-def smooth_spectrum(y, window=11, poly=3):
-    """
-    Savitzky-Golay 스무딩 — 피크 위치·형태를 보존하면서 고주파 노이즈 제거.
-
-    Parameters
-    ----------
-    y      : 1-D array
-    window : 윈도우 크기 (홀수; 짝수면 자동으로 +1)
-    poly   : 다항식 차수 (window > poly 이어야 함)
-    """
-    from scipy.signal import savgol_filter
-    n = len(y)
-    w = window if window % 2 == 1 else window + 1   # 홀수 보장
-    w = max(w, poly + 2 if (poly + 2) % 2 == 1 else poly + 3)
-    w = min(w, n if n % 2 == 1 else n - 1)
-    if w <= poly:
-        return np.asarray(y, dtype=float)
-    return savgol_filter(np.asarray(y, dtype=float), w, min(poly, w - 1))
 
 
 def read_park_pifm_tiff(filepath):
@@ -60,7 +36,7 @@ def read_park_pifm_tiff(filepath):
     dict:
         scan_x_nm  : 스캔 크기 X (nm)
         scan_y_nm  : 스캔 크기 Y (nm)
-        z_nm       : 토포그래피 이미지 (N×N, nm) — 픽셀 수는 raw 데이터에서 자동 감지
+        z_nm       : 토포그래피 이미지 (256×256, nm)
                      부호 반전 적용 (밝은색 = 높은 곳), origin='lower' 용
         coords_nm  : 포인트 좌표 [(x,y), ...] in nm, Y원점=아래
         points     : list of dict
@@ -93,10 +69,7 @@ def read_park_pifm_tiff(filepath):
     # ── Z Height 이미지 (tag50434) ────────────────────────────
     # raw * 1e4 → nm, 부호 반전: 밝은색 = 높은 곳
     # imshow origin='lower' 사용 시 flipud 불필요
-    # 픽셀 수를 raw 바이트 수에서 자동 추론 (256×256, 128×128 등 대응)
-    _n_px   = len(raw34) // 4          # float32 = 4 bytes
-    _img_sz = int(round(_n_px ** 0.5))
-    z_nm = np.frombuffer(raw34, dtype=np.float32).reshape(_img_sz, _img_sz) * 1e4 * (-1)
+    z_nm = np.frombuffer(raw34, dtype=np.float32).reshape(256, 256) * 1e4 * (-1)
 
     # ── 스펙트럼 구조 자동 감지 (tag50439) ───────────────────
     # wavenumber 구간(700~2500 cm-1)을 직접 탐색하여 n_wn/step/n_pts 결정
@@ -222,8 +195,7 @@ def save_spectra(data, channel='amplitude_uV', filepath=None):
     col_units = ['cm-1']              + [unit] * n_pts
 
     # ── Excel 저장 (xlsxwriter) ───────────────────────────────
-    ch_label  = channel.replace('_uV', '')
-    xlsx_path = filepath + f'_{ch_label}.xlsx'
+    xlsx_path = filepath + f'_{channel}.xlsx'
     workbook  = xlsxwriter.Workbook(xlsx_path)
     ws        = workbook.add_worksheet('Spectra')
 
@@ -240,7 +212,7 @@ def save_spectra(data, channel='amplitude_uV', filepath=None):
 
     # ── Origin용 탭 구분 텍스트 저장 ─────────────────────────
     # 첫 행: 컬럼명, 두 번째 행: 단위 (Origin LongName/Units 인식)
-    txt_path = filepath + f'_{ch_label}.txt'
+    txt_path = filepath + f'_{channel}.txt'
     with open(txt_path, 'w', encoding='utf-8') as f:
         f.write('\t'.join(col_heads) + '\n')
         f.write('\t'.join(col_units) + '\n')
@@ -254,8 +226,9 @@ def save_spectra(data, channel='amplitude_uV', filepath=None):
 
 def plot_topo_spectra(data, coords_nm=None, channel='amplitude_uV',
                       stack_gap=1.1, title=None, save_path=None,
-                      xlim=(850, 2400), peaks=None, peak_color='#cc44aa',
-                      smooth=False, smooth_window=11, smooth_poly=3):
+                      xlim=(850, 2400),
+                      peaks=None,
+                      peak_color='#cc44aa'):
     """
     토포그래피 + 측정 위치 + 스펙트럼 stacking 플롯
 
@@ -329,17 +302,9 @@ def plot_topo_spectra(data, coords_nm=None, channel='amplitude_uV',
 
     # ── 스펙트럼 (Pt1 아래, Pt_n 위) ─────────────────────────
     for i in range(n_pts):
-        offset = i * stack_gap
-        y_raw  = amps_norm[i]
-        color  = colors[i]
-        if smooth:
-            y_sm = smooth_spectrum(y_raw, smooth_window, smooth_poly)
-            ax_spec.plot(wn_crop, y_raw + offset, color=color,
-                         linewidth=0.6, alpha=0.3, label=f'Pt{i + 1}')
-            ax_spec.plot(wn_crop, y_sm  + offset, color=color, linewidth=1.2)
-        else:
-            ax_spec.plot(wn_crop, y_raw + offset, color=color,
-                         linewidth=0.85, label=f'Pt{i + 1}')
+        offset = i * stack_gap          # Pt1=0, Pt2=gap, ..., Pt_n=(n-1)*gap
+        ax_spec.plot(wn_crop, amps_norm[i] + offset,
+                     color=colors[i], linewidth=0.85, label=f'Pt{i + 1}')
 
     # ── 피크 수직선 + 라벨 (인접 피크는 높이를 교대로 어긋나게 배치) ──
     if peaks:
@@ -378,7 +343,6 @@ def plot_topo_spectra(data, coords_nm=None, channel='amplitude_uV',
     # ── 축 ────────────────────────────────────────────────────
     y_top = n_pts * stack_gap + (2.0 if peaks else 0.2)
     ax_spec.set_xlim(xlim[0], xlim[1])
-    ax_spec.invert_xaxis()
     ax_spec.set_ylim(-0.3, y_top)
     ax_spec.set_xlabel('Wavenumber (cm⁻¹)', fontsize=11)
     ch_label = {'amplitude_uV': 'PiFM Amplitude (norm., offset)',
@@ -398,8 +362,8 @@ def plot_topo_spectra(data, coords_nm=None, channel='amplitude_uV',
                    borderpad=0.5, labelspacing=0.3)
 
     if title:
-        fig.suptitle(title, fontsize=13, y=0.99)
-    fig.subplots_adjust(left=0.07, right=0.97, top=0.84)
+        fig.suptitle(title, fontsize=13, y=1.04)
+    fig.subplots_adjust(left=0.07, right=0.97, top=0.88)
 
     if save_path:
         plt.savefig(save_path, dpi=150, bbox_inches='tight')
@@ -470,7 +434,6 @@ def detect_peaks(data, point_indices=None, channel='amplitude_uV',
                 ha='center', va='bottom', fontsize=7.5,
                 color='#cc44aa', fontweight='bold')
     ax.set_xlim(xlim)
-    ax.invert_xaxis()
     ax.set_ylim(-0.05, 1.25)
     ax.set_xlabel('Wavenumber (cm⁻¹)', fontsize=11)
     ax.set_ylabel('Amplitude (norm.)', fontsize=11)
@@ -521,7 +484,6 @@ def plot_spectrum(data, point_index, channel='amplitude_uV',
     fig, ax = plt.subplots(figsize=(9, 4))
     ax.plot(wn_c, amp_c, color='#334466', linewidth=0.9)
     ax.set_xlim(xlim)
-    ax.invert_xaxis()
     ax.set_xlabel('Wavenumber (cm⁻¹)', fontsize=11)
     ax.set_ylabel(ch_label.get(channel, channel), fontsize=11)
     ax.set_title(title if title else f'Pt{point_index} — {channel}', fontsize=12)
@@ -537,8 +499,7 @@ def plot_spectrum(data, point_index, channel='amplitude_uV',
 
 def plot_avg_spectrum(data, point_indices=None, channel='amplitude_uV',
                      xlim=(850, 2400), normalize=False,
-                     title=None, save_path=None, filepath=None,
-                     smooth=False, smooth_window=11, smooth_poly=3):
+                     title=None, save_path=None, filepath=None):
     """
     선택한 포인트들의 평균 스펙트럼을 플롯하고 선택적으로 저장한다.
 
@@ -591,17 +552,9 @@ def plot_avg_spectrum(data, point_indices=None, channel='amplitude_uV',
     ylabel = 'Amplitude (norm.)' if normalize else ch_label.get(channel, channel)
 
     fig, ax = plt.subplots(figsize=(9, 4))
-    if smooth:
-        y_sm = smooth_spectrum(avg_c, smooth_window, smooth_poly)
-        ax.plot(wn_c, avg_c, color='#334466', linewidth=0.6, alpha=0.3,
-                label=f'mean ({pt_label})')
-        ax.plot(wn_c, y_sm,  color='#334466', linewidth=1.5,
-                label=f'mean ({pt_label}) — smooth')
-    else:
-        ax.plot(wn_c, avg_c, color='#334466', linewidth=1.0,
-                label=f'mean ({pt_label})')
+    ax.plot(wn_c, avg_c, color='#334466', linewidth=1.0,
+            label=f'mean ({pt_label})')
     ax.set_xlim(xlim)
-    ax.invert_xaxis()
     ax.set_xlabel('Wavenumber (cm⁻¹)', fontsize=11)
     ax.set_ylabel(ylabel, fontsize=11)
     ax.set_title(title if title else f'Average Spectrum  [{pt_label}]', fontsize=12)
@@ -649,8 +602,7 @@ def plot_avg_spectrum(data, point_indices=None, channel='amplitude_uV',
 
 def plot_overlay_spectra(scan_list, channel='amplitude_uV',
                          xlim=(850, 2400), normalize=True,
-                         title=None, save_path=None, filepath=None,
-                         smooth=False, smooth_window=11, smooth_poly=3):
+                         title=None, save_path=None, filepath=None):
     """
     여러 스캔의 평균 스펙트럼을 한 그래프에 겹쳐 그린다.
 
@@ -724,16 +676,10 @@ def plot_overlay_spectra(scan_list, channel='amplitude_uV',
                       else ', '.join(f'Pt{i}' for i in point_indices))
         line_label = f'{label}  [{pt_str}]' if label else f'[{pt_str}]'
 
-        if smooth:
-            y_sm = smooth_spectrum(avg_c, smooth_window, smooth_poly)
-            ax.plot(wn_c, avg_c, color=color, linewidth=0.6, alpha=0.3, label=line_label)
-            ax.plot(wn_c, y_sm,  color=color, linewidth=1.3)
-        else:
-            ax.plot(wn_c, avg_c, color=color, linewidth=1.0, label=line_label)
+        ax.plot(wn_c, avg_c, color=color, linewidth=1.0, label=line_label)
         results.append((label, wn_c, avg_c))
 
     ax.set_xlim(xlim)
-    ax.invert_xaxis()
     ax.set_xlabel('Wavenumber (cm⁻¹)', fontsize=11)
     ax.set_ylabel(ylabel, fontsize=11)
     ax.set_title(title if title else f'Overlay — {channel}', fontsize=12)
@@ -788,9 +734,10 @@ def plot_overlay_spectra(scan_list, channel='amplitude_uV',
 
 
 def plot_overlay_normalized(scan_list, channel='amplitude_uV',
-                            xlim=(700, 2400), peaks=None, peak_color='#cc44aa',
-                            title=None, save_path=None, filepath=None,
-                            smooth=False, smooth_window=11, smooth_poly=3):
+                            xlim=(700, 2400),
+                            peaks=None,
+                            peak_color='#cc44aa',
+                            title=None, save_path=None, filepath=None):
     """
     여러 스캔의 평균 스펙트럼을 각 스펙트럼의 최대값으로 정규화(0~1)하여 겹쳐 그린다.
     피크 위치를 수직 점선으로 표시할 수 있다.
@@ -855,12 +802,7 @@ def plot_overlay_normalized(scan_list, channel='amplitude_uV',
                       else ', '.join(f'Pt{i}' for i in point_indices))
         line_label = f'{label}  [{pt_str}]' if label else f'[{pt_str}]'
 
-        if smooth:
-            y_sm = smooth_spectrum(avg_norm, smooth_window, smooth_poly)
-            ax.plot(wn_c, avg_norm, color=color, linewidth=0.6, alpha=0.3, label=line_label)
-            ax.plot(wn_c, y_sm,     color=color, linewidth=1.3)
-        else:
-            ax.plot(wn_c, avg_norm, color=color, linewidth=1.0, label=line_label)
+        ax.plot(wn_c, avg_norm, color=color, linewidth=1.0, label=line_label)
         results.append((label, wn_c, avg_norm))
 
     # ── 피크 수직선 + 라벨 ───────────────────────────────────────
@@ -951,10 +893,11 @@ def plot_overlay_normalized(scan_list, channel='amplitude_uV',
 
 
 def plot_overlay_normalized_stacked(scan_list, channel='amplitude_uV',
-                                    xlim=(700, 2400), stack_gap=1.2,
-                                    peaks=None, peak_color='#cc44aa',
-                                    title=None, save_path=None, filepath=None,
-                                    smooth=False, smooth_window=11, smooth_poly=3):
+                                    xlim=(700, 2400),
+                                    stack_gap=1.2,
+                                    peaks=None,
+                                    peak_color='#cc44aa',
+                                    title=None, save_path=None, filepath=None):
     """
     여러 스캔의 평균 스펙트럼을 최대값으로 정규화(0~1)한 뒤 수직으로 쌓아
     피크 위치를 비교하기 쉽게 표시한다.
@@ -1025,12 +968,7 @@ def plot_overlay_normalized_stacked(scan_list, channel='amplitude_uV',
     for i, (color, (label, wn_c, avg_norm, pt_str)) in enumerate(zip(colors, results)):
         offset     = i * stack_gap
         line_label = f'{label}  [{pt_str}]' if label else f'[{pt_str}]'
-        if smooth:
-            y_sm = smooth_spectrum(avg_norm, smooth_window, smooth_poly)
-            ax.plot(wn_c, avg_norm + offset, color=color, linewidth=0.6, alpha=0.3)
-            ax.plot(wn_c, y_sm     + offset, color=color, linewidth=1.3)
-        else:
-            ax.plot(wn_c, avg_norm + offset, color=color, linewidth=0.9)
+        ax.plot(wn_c, avg_norm + offset, color=color, linewidth=0.9)
         ax.axhline(offset, color=color, linewidth=0.4, linestyle=':', alpha=0.5)
         ytick_pos.append(offset)
         ytick_labels.append(line_label)
